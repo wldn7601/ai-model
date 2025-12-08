@@ -1,0 +1,19 @@
+{
+  "original": {
+    "total_ratings": 25000095
+  },
+  "filtered": {
+    "total_ratings": 24746552,
+    "total_users": 162357,
+    "total_movies": 15906,
+    "retention_rate": 0.9898583185383896
+  },
+  "split": {
+    "train_size": 19797241,
+    "test_size": 4949311
+  },
+  "config": {
+    "min_user_ratings": 20,
+    "min_movie_ratings": 30
+  }
+}
