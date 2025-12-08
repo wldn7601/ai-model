@@ -13,7 +13,7 @@ outputs/model_checkpoints/*.pkl
 
 # 4. Results (실행 결과물)
 # 결과를 기록으로 남기고 싶다면 이 부분은 주석 처리하세요.
-results/*.json
+# results/*.json
 
 # 5. OS & Editor Config
 .DS_Store

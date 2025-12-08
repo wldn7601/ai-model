@@ -1,0 +1,24 @@
+{
+  "Precision@5": 0.00011601675797615212,
+  "Recall@5": 2.625389470378409e-05,
+  "MAP@5": 4.060586529165324e-05,
+  "NDCG@5": 9.980765180385713e-05,
+  "Precision@10": 9.023525620367386e-05,
+  "Recall@10": 5.535483155178199e-05,
+  "MAP@10": 2.6622981344218856e-05,
+  "NDCG@10": 9.30372417655773e-05,
+  "Precision@20": 7.734450531743476e-05,
+  "Recall@20": 7.148864481573929e-05,
+  "MAP@20": 1.9499608701210263e-05,
+  "NDCG@20": 9.431735615565014e-05,
+  "Coverage": 1.0,
+  "Test_RMSE": 177.06298828125,
+  "Test_MSE": 31351.302734375,
+  "rmse_rating_scale": 4.42657470703125,
+  "interpretation": {
+    "precision@10": "Needs Improvement",
+    "ndcg@10": "Needs Improvement",
+    "coverage": "Excellent \u2b50\u2b50\u2b50 (High diversity)",
+    "rmse": "Needs Improvement (>2.0 rating error)"
+  }
+}
