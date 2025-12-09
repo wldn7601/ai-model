@@ -22,26 +22,27 @@ MOVIE_MAPPING_PATH = DATA_DIR / "movie_id_mapping.pkl"
 TRAIN_MATRIX_PATH = DATA_DIR / "train_matrix.npz"
 TEST_MATRIX_PATH = DATA_DIR / "test_matrix.npz"
 
-# ALS Hyperparameters
+# [수정 1] 모델 복잡도 조정
+# 데이터가 희소할 때 factors가 너무 크면 학습이 제대로 안 됩니다. 64로 조정 권장.
 ALS_CONFIG = {
-    'factors': 100,
-    'regularization': 0.05,
-    'iterations': 15,
+    'factors': 100,           # 기존 100
+    'regularization': 0.05,  # 0.05 유지
+    'iterations': 20,
     'dtype': 'float32',
     'use_gpu': True,
-    'calculate_training_loss': False  # 학습 속도 향상
+    'calculate_training_loss': False
 }
 
-# Implicit Feedback 변환 설정
+# [수정 2] 데이터 필터링 해제
 IMPLICIT_CONFIG = {
-    'alpha': 15,
-    'min_rating_threshold': 3.0  # ← 변경: 4.0 이상만 positive
+    'alpha': 20,              # 15~40 사이 권장. 너무 크면 1.0 평점이 과대평가될 수 있음.
+    'min_rating_threshold': 3.0
 }
 
 # 평가 설정
 EVALUATION_CONFIG = {
-    'k_values': [5, 10, 20],  # Precision@K, Recall@K 계산할 K 값들
-    'n_recommendations': 100   # 추천 생성할 개수
+    'k_values': [5, 10, 20],
+    'n_recommendations': 100
 }
 
 # 모델 체크포인트 경로

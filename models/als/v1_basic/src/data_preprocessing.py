@@ -72,7 +72,7 @@ def create_id_mappings(
 def convert_to_implicit_confidence(
     df: pd.DataFrame, 
     alpha: float = 40.0,
-    min_rating: float = 4.0  # ← 변경: 4.0 이상만 positive
+    min_rating: float = 3.0
 ) -> pd.DataFrame:
     """
     Explicit ratings를 Implicit binary feedback + confidence로 변환
@@ -85,20 +85,20 @@ def convert_to_implicit_confidence(
     Returns:
         DataFrame with 'preference' (0 or 1) and 'confidence' columns
     """
-    logger.info(f"Converting to implicit feedback (alpha={alpha}, threshold={min_rating})")
+    logger.info(f"Converting to implicit feedback (alpha={alpha})")
     
-    # Binary preference: rating >= 4.0 → 1 (positive), 나머지 → 0 (negative)
-    df['preference'] = (df['rating'] >= min_rating).astype(int)
+    original_len = len(df)
     
-    # Confidence: 높은 rating일수록 높은 신뢰도
+    # 1. min_rating이 0보다 큰 경우에만 필터링 (보통은 0으로 설정하여 모두 사용)
+    if min_rating > 0:
+        df = df[df['rating'] >= min_rating].copy()
+        logger.info(f"Filtered ratings < {min_rating}. Kept: {len(df):,}/{original_len:,}")
+
+    # 2. Confidence 계산: 1 + alpha * rating
+    # 평점이 1.0이어도 confidence는 1 + 20*1 = 21이 됨. (봤다는 사실 자체가 중요)
     df['confidence'] = 1.0 + alpha * df['rating']
     
-    # Positive만 유지 (Implicit ALS는 positive feedback만 사용)
-    original_len = len(df)
-    df = df[df['preference'] == 1].copy()
-    logger.info(f"Kept positive feedback only: {len(df):,}/{original_len:,} ({len(df)/original_len*100:.1f}%)")
-    
-    logger.info(f"Confidence range: [{df['confidence'].min():.2f}, {df['confidence'].max():.2f}]")
+    logger.info(f"Confidence stats - Min: {df['confidence'].min():.2f}, Max: {df['confidence'].max():.2f}")
     
     return df
 
@@ -116,33 +116,33 @@ def create_sparse_matrix(
     """
     logger.info(f"Creating sparse matrix with {value_column} values")
     
-    user_indices = df['userId'].map(user_to_idx).values
-    movie_indices = df['movieId'].map(movie_to_idx).values
+    user_indices = df['userId'].map(user_to_idx)
+    movie_indices = df['movieId'].map(movie_to_idx)
     values = df[value_column].values
     
-    # NaN 체크
-    valid_mask = ~(pd.isna(user_indices) | pd.isna(movie_indices))
+    # NaN 체크 (Test 셋에만 있는 유저/영화 제거)
+    valid_mask = ~(user_indices.isna() | movie_indices.isna())
+    
     if not valid_mask.all():
         n_invalid = (~valid_mask).sum()
-        logger.warning(f"Found {n_invalid} ratings with unmapped IDs. Removing them.")
-        user_indices = user_indices[valid_mask].astype(int)
-        movie_indices = movie_indices[valid_mask].astype(int)
+        logger.warning(f"Dropping {n_invalid} interactions (Unknown User/Movie IDs)")
+        user_indices = user_indices[valid_mask]
+        movie_indices = movie_indices[valid_mask]
         values = values[valid_mask]
+    
+    user_indices = user_indices.astype(int)
+    movie_indices = movie_indices.astype(int)
     
     n_users = len(user_to_idx)
     n_movies = len(movie_to_idx)
     
-    # CSR matrix 생성
     matrix = csr_matrix(
         (values, (user_indices, movie_indices)),
         shape=(n_users, n_movies),
         dtype=np.float32
     )
     
-    logger.info(f"Created sparse matrix: shape={matrix.shape}, nnz={matrix.nnz:,}")
-    sparsity = 100 * (1 - matrix.nnz / (n_users * n_movies))
-    logger.info(f"Sparsity: {sparsity:.4f}%")
-    
+    logger.info(f"Matrix shape: {matrix.shape}, NNZ: {matrix.nnz:,}")
     return matrix
 
 def save_mappings(

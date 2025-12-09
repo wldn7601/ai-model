@@ -52,27 +52,47 @@ class ALSRecommender:
         모델 학습
         
         Args:
-            train_matrix: User-Item interaction sparse matrix (n_users, n_items)
+            train_matrix: User-Item matrix (n_users, n_items)
+                         값은 confidence scores
         """
         logger.info("Starting model training...")
-        logger.info(f"Train matrix shape: {train_matrix.shape}")
-        logger.info(f"Non-zero elements: {train_matrix.nnz:,}")
+        logger.info(f"Input matrix shape: {train_matrix.shape}")
+        logger.info(f"  Users: {train_matrix.shape[0]:,}")
+        logger.info(f"  Items: {train_matrix.shape[1]:,}")
+        logger.info(f"  Non-zero: {train_matrix.nnz:,}")
         
         start_time = time.time()
         
-        # ALS는 item-user matrix를 입력으로 받음 (전치 필요)
-        item_user_matrix = train_matrix.T.tocsr().astype(self.dtype)
+        # Convert to CSR format with correct dtype
+        matrix = train_matrix.tocsr().astype(self.dtype)
         
         # GPU 학습
         if self.use_gpu:
             logger.info("Training on GPU...")
-            self.model.fit(item_user_matrix, show_progress=True)
+            # ★ fit 메서드는 user_items matrix를 받음 (users × items)
+            self.model.fit(matrix, show_progress=True)
         else:
             logger.info("Training on CPU...")
-            self.model.fit(item_user_matrix, show_progress=True)
+            self.model.fit(matrix, show_progress=True)
+        
+        # 검증
+        logger.info(f"\nLearned latent factors:")
+        logger.info(f"  User factors: {self.model.user_factors.shape}")
+        logger.info(f"  Item factors: {self.model.item_factors.shape}")
+        
+        # Shape 검증
+        if self.model.user_factors.shape[0] != train_matrix.shape[0]:
+            logger.error(f"ERROR: User factors count mismatch!")
+            logger.error(f"  Expected: {train_matrix.shape[0]}")
+            logger.error(f"  Got: {self.model.user_factors.shape[0]}")
+        
+        if self.model.item_factors.shape[0] != train_matrix.shape[1]:
+            logger.error(f"ERROR: Item factors count mismatch!")
+            logger.error(f"  Expected: {train_matrix.shape[1]}")
+            logger.error(f"  Got: {self.model.item_factors.shape[0]}")
         
         elapsed_time = time.time() - start_time
-        logger.info(f"Training completed in {elapsed_time:.2f} seconds")
+        logger.info(f"\nTraining completed in {elapsed_time:.2f} seconds")
         
         return elapsed_time
     
