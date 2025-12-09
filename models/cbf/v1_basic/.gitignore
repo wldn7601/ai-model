@@ -1,0 +1,27 @@
+# 1. Python Compile Files (실행 시 자동 생성됨)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 2. Datasets (용량이 크고 재생성 가능하거나 원본 데이터임)
+data/*.csv
+data/*.npz
+data/*.pkl
+data/*.json
+
+# 3. Trained Model Checkpoints (용량이 큼)
+outputs/model_checkpoints/*.pkl
+
+# 4. Results (실행 결과물)
+# 결과를 기록으로 남기고 싶다면 이 부분은 주석 처리하세요.
+# results/*.json
+
+# 5. OS & Editor Config
+.DS_Store
+.vscode/
+.idea/
+
+# 6. Virtual Environment
+.venv/
+env/
+venv/
