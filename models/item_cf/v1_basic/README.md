@@ -1,5 +1,10 @@
 # Item-CF v1_basic
 
+ai-model/models/als/v1_basic/data
+폴더 아래에
+프로젝트 폴더안에 있는 archive에서 ratings.csv 파일을 전처리 한거
+-> 얘는 전처리 코드 실행하면 됨
+
 기본 Item-Based Collaborative Filtering 프로토타입
 
 ## 개요
