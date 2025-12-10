@@ -3,6 +3,7 @@ venv311/
 
 # 실제 영화 데이터들
 datas/
+movielens_data
 
 # 파이썬 파일
 # __init__.py
