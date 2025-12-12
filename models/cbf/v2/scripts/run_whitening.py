@@ -5,6 +5,8 @@ from sklearn.preprocessing import normalize
 
 """
 
+안 쓸거 같음
+
 movies_with_embeddings.pkl 파일에서 
 모든 영화가 다 비슷해 보이는 문제(구조적 편향, Vector Space Collapse)를 해결하는 코드
 
