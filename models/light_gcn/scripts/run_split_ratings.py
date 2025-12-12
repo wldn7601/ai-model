@@ -5,6 +5,7 @@ import os
 from scipy.sparse import csr_matrix, save_npz
 import torch
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split # 추가 필요
 
 # 경로 설정
 DATA_DIR = '/home/ubuntu/ai-model/models/light_gcn/data'
@@ -20,6 +21,11 @@ df = pd.read_csv(RATINGS_PATH, usecols=['userId', 'movieId', 'rating', 'timestam
 print(f"Original data: {len(df):,} ratings")
 print(f"Users: {df['userId'].nunique():,}")
 print(f"Movies: {df['movieId'].nunique():,}\n")
+
+# threshold 설정
+# THRESHOLD = None  # 모든 평점을 positive로 사용
+# THRESHOLD = 3.5
+THRESHOLD = None
 
 # 2. Temporal Split (벡터화 버전)
 def temporal_split_optimized(df, test_ratio=0.2):
@@ -48,7 +54,38 @@ def temporal_split_optimized(df, test_ratio=0.2):
     
     return train_df, test_df
 
-train_df, test_df = temporal_split_optimized(df, test_ratio=0.2)
+# [핵심 변경 2] Random Split 함수
+def random_split(df, test_ratio=0.2):
+    print("Performing Random Split (8:2)...")
+    
+    # 1. Threshold 적용 (None이면 스킵)
+    if THRESHOLD is not None:
+        df = df[df['rating'] >= THRESHOLD].copy()
+        print(f"Filtered ratings < {THRESHOLD}")
+    
+    # 2. 유저별로 최소 5개 이상의 로그가 있는 경우만 살리기 (노이즈 제거)
+    # (너무 적은 유저는 Train/Test 나누기가 애매하므로)
+    user_counts = df.groupby('userId').size()
+    valid_users = user_counts[user_counts >= 5].index
+    df = df[df['userId'].isin(valid_users)].copy()
+    print(f"Filtered users with < 5 interactions. Remaining: {len(df):,}")
+
+    # 3. Stratified Split (유저별 비율 유지하며 랜덤 분할)
+    # sklearn의 train_test_split 사용 (stratify 옵션)
+    train_df, test_df = train_test_split(
+        df, 
+        test_size=test_ratio, 
+        random_state=42, 
+        stratify=df['userId'] # 유저별로 골고루 8:2가 되도록
+    )
+    
+    return train_df, test_df
+
+# 타임스태프로 분할
+# train_df, test_df = temporal_split_optimized(df, test_ratio=0.2)
+
+# 랜덤으로 분할
+train_df, test_df = random_split(df, test_ratio=0.2)
 
 print("=== Temporal Split (80:20) ===")
 print(f"Train: {len(train_df):,} ({len(train_df)/len(df)*100:.2f}%)")
@@ -67,9 +104,6 @@ def convert_to_implicit(df, threshold=None):
     else:
         return df[df['rating'] >= threshold].copy()
 
-# threshold 설정
-# THRESHOLD = None  # 모든 평점을 positive로 사용
-THRESHOLD = 3.5
 
 print("Converting to implicit feedback...")
 train_implicit = convert_to_implicit(train_df, threshold=THRESHOLD)

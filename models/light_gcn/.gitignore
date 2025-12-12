@@ -1,6 +1,10 @@
 # /home/ubuntu/ai-model/datas/data/ratings.csv 
 # 파일을 전처리한 폴더
-data/
+data/*.pkl
+data/*.pt
+data/*.csv
+data/*.npz
+
 
 # 학습 모델
-checkpoints/
+checkpoints/*.pt
