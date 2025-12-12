@@ -1,0 +1,3 @@
+# 전처리된 데이터
+data/*.csv
+data/*.pkl
