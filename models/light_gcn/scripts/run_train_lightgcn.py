@@ -265,9 +265,9 @@ def train_epoch(model, sampler, optimizer, epoch, n_epochs, reg_weight=1e-4):
 
 
 # 하이퍼파라미터
-EMBEDDING_DIM = 64
+EMBEDDING_DIM = 256
 N_LAYERS = 3
-BATCH_SIZE = 2048
+BATCH_SIZE = 4096
 LEARNING_RATE = 0.001
 REG_WEIGHT = 1e-4
 N_EPOCHS = 20
