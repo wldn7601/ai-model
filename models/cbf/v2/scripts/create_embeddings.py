@@ -13,7 +13,7 @@ multilingual-e5-large 모델을 사용한 영화 임베딩 생성
 - 태그 없음: "overview}"
 - overview가 10자 미만이면 + Title
 
-편향 제거 X
+편향 제거 X -> run_whitening.py 파일 실행 X
 
 나오는 결과 :
 기존 데이터 + 임베딩된 결과

@@ -3,10 +3,12 @@ import json
 import os
 
 """
+
 final_movies_processed.pkl 파일 정리:
 1. 결측치가 있는 행 제거
 2. text_input 컬럼 삭제
 3. embedding 컬럼 삭제
+
 """
 
 # 파일 경로
