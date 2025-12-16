@@ -319,61 +319,6 @@ class HybridRecommender:
         except (ValueError, TypeError):
             return 0
     
-    # def _find_movie_combinations(
-    #     self,
-    #     movie_ids: List[int],
-    #     scores: np.ndarray,
-    #     target_time: int,
-    #     top_k: int = 20
-    # ) -> List[dict]:
-    #     """
-    #     Knapsack 알고리즘으로 영화 조합 찾기
-        
-    #     Args:
-    #         movie_ids: 후보 영화 ID 리스트
-    #         scores: 각 영화의 점수
-    #         target_time: 목표 시간(분)
-    #         top_k: 반환할 조합 개수
-    #     """
-    #     # 영화별 (id, runtime, score) 튜플 생성
-    #     movie_data = []
-    #     for i, mid in enumerate(movie_ids):
-    #         runtime = self._get_movie_runtime(mid)
-    #         if runtime > 0 and runtime <= target_time:
-    #             movie_data.append((mid, runtime, scores[i]))
-        
-    #     # 점수 기준 정렬 (상위 500개만 사용 - 성능 최적화)
-    #     movie_data.sort(key=lambda x: x[2], reverse=True)
-    #     movie_data = movie_data[:500]
-        
-    #     print(f"Finding combinations from {len(movie_data)} candidate movies...")
-        
-    #     # 가능한 모든 조합 탐색 (2~5개 영화 조합)
-    #     valid_combinations = []
-        
-    #     for combo_size in range(2, 6):  # 2, 3, 4, 5개 조합
-    #         for combo in combinations(movie_data, combo_size):
-    #             total_runtime = sum(m[1] for m in combo)
-                
-    #             # 목표 시간의 80% ~ 100% 범위에 맞는 조합
-    #             if target_time * 0.8 <= total_runtime <= target_time:
-    #                 avg_score = np.mean([m[2] for m in combo])
-    #                 movie_ids_in_combo = [m[0] for m in combo]
-                    
-    #                 valid_combinations.append({
-    #                     'movies': movie_ids_in_combo,
-    #                     'total_runtime': total_runtime,
-    #                     'avg_score': avg_score,
-    #                     'individual_scores': [m[2] for m in combo]
-    #                 })
-        
-    #     # 평균 점수 기준 정렬
-    #     valid_combinations.sort(key=lambda x: x['avg_score'], reverse=True)
-        
-    #     print(f"Found {len(valid_combinations)} valid combinations")
-        
-    #     return valid_combinations[:top_k]
-    
     def _find_movie_combinations(
         self,
         movie_ids: List[int],
