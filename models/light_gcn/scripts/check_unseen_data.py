@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-# 경로 설정 (사용자 환경에 맞춤)
+# 경로 설정
 DATA_DIR = '/home/ubuntu/ai-model/models/light_gcn/data'
 
 # 1. 분할된 데이터 로드
@@ -9,9 +9,9 @@ print("Loading split data...")
 train_df = pd.read_csv(os.path.join(DATA_DIR, 'train_ratings.csv'))
 test_df = pd.read_csv(os.path.join(DATA_DIR, 'test_ratings.csv'))
 
-# 2. Unseen Item 비율 계산 (사용자가 주신 로직)
-train_items = set(train_df['movieId'].unique())
-test_items = set(test_df['movieId'].unique())
+# 2. Unseen Item 비율 계산
+train_items = set(train_df['tmdbId'].unique())  # tmdb_id → tmdbId
+test_items = set(test_df['tmdbId'].unique())    # tmdb_id → tmdbId
 
 # 학습에는 없는데 테스트에는 있는 영화들 (차집합)
 unseen_items = test_items - train_items

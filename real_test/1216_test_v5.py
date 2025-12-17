@@ -317,33 +317,27 @@ class HybridRecommender:
         allow_adult: bool = True
     ) -> List[dict]:
         """
-        Track B: 인기 추천 (장르 무관, 시간+성인물만 필터링, 하이브리드 점수 기반)
+        Track B: 장르+OTT 무시한 맞춤 추천 (하이브리드 점수 기반)
         """
         if exclude_ids is None:
             exclude_ids = []
         
         print(f"\n[Track B Debug]")
         print(f"  Input movies: {len(movie_ids)}")
-        print(f"  Excluded by Track A: {len(exclude_ids)} movies")
+        print(f"  Excluded movies: {len(exclude_ids)}")
         print(f"  Max runtime: {max_runtime}")
-        print(f"  Allow adult: {allow_adult}")
         
-        # 인기 점수 계산
-        popularity_scores = []
         valid_movies = []
         valid_indices = []
-        
-        runtime_filtered = 0
-        adult_filtered = 0
-        popularity_filtered = 0
+        valid_scores = []
         
         for i, mid in enumerate(movie_ids):
             if mid in exclude_ids:
                 continue
-                
+            
             meta = self.metadata_map.get(mid, {})
             
-            # 1. 시간 필터링
+            # 시간 필터링 (조합 추천 시 None이면 스킵)
             if max_runtime is not None:
                 runtime = meta.get('runtime', 0)
                 try:
@@ -352,171 +346,40 @@ class HybridRecommender:
                     runtime = 0
                 
                 if runtime <= 0 or runtime > max_runtime:
-                    runtime_filtered += 1
                     continue
             
-            # 2. 성인물 필터링
+            # 성인물 필터링
             if not allow_adult:
                 adult = meta.get('adult', False)
                 if adult:
-                    adult_filtered += 1
                     continue
             
-            # 3. popularity 체크 (TMDB popularity 기반)
-            popularity = meta.get('popularity', 0)
-            
-            try:
-                popularity = float(popularity) if popularity else 0
-            except (ValueError, TypeError):
-                popularity = 0
-            
-            # popularity 5.0 이상인 영화만 (인기 영화)
-            if popularity < 5.0:
-                popularity_filtered += 1
-                continue
-            
-            # 4. 인기 점수 계산
-            release_date = meta.get('release_date', '')
-            try:
-                year = int(release_date[:4]) if release_date and len(release_date) >= 4 else 0
-                is_recent = year >= 2022
-            except (ValueError, TypeError):
-                is_recent = False
-            
-            # 인기 점수 = 하이브리드 점수(0.5) + popularity 정규화(0.4) + 신작 보너스(0.1)
-            hybrid_score = scores[i]
-            # popularity는 보통 0~100 범위, 10으로 나눠서 0~10 범위로 변환
-            normalized_popularity = min(popularity / 10.0, 10.0) / 10.0  # 0~1 범위
-            popularity_score = (hybrid_score * 0.5) + (normalized_popularity * 0.4) + (0.1 if is_recent else 0)
-            
-            popularity_scores.append(popularity_score)
             valid_movies.append(mid)
             valid_indices.append(i)
+            valid_scores.append(scores[i])
         
-        print(f"  Filtered by runtime: {runtime_filtered}")
-        print(f"  Filtered by adult: {adult_filtered}")
-        print(f"  Filtered by popularity: {popularity_filtered}")
-        print(f"  Valid movies after first pass: {len(valid_movies)}")
-        
-        # Fallback: 조건 완화
-        if len(valid_movies) < top_k:
-            print(f"  -> Relaxing popularity criteria (1.0 이상)...")
-            
-            for i, mid in enumerate(movie_ids):
-                if mid in exclude_ids or mid in valid_movies:
-                    continue
-                    
-                meta = self.metadata_map.get(mid, {})
-                
-                # 시간 필터링
-                if max_runtime is not None:
-                    runtime = meta.get('runtime', 0)
-                    try:
-                        runtime = int(runtime) if runtime else 0
-                    except (ValueError, TypeError):
-                        runtime = 0
-                    
-                    if runtime <= 0 or runtime > max_runtime:
-                        continue
-                
-                # 성인물 필터링
-                if not allow_adult:
-                    adult = meta.get('adult', False)
-                    if adult:
-                        continue
-                
-                # popularity 1.0 이상만 (매우 완화)
-                popularity = meta.get('popularity', 0)
-                try:
-                    popularity = float(popularity) if popularity else 0
-                except (ValueError, TypeError):
-                    popularity = 0
-                
-                if popularity < 1.0:
-                    continue
-                
-                release_date = meta.get('release_date', '')
-                try:
-                    year = int(release_date[:4]) if release_date and len(release_date) >= 4 else 0
-                    is_recent = year >= 2022
-                except (ValueError, TypeError):
-                    is_recent = False
-                
-                hybrid_score = scores[i]
-                normalized_popularity = min(popularity / 10.0, 10.0) / 10.0
-                popularity_score = (hybrid_score * 0.5) + (normalized_popularity * 0.4) + (0.1 if is_recent else 0)
-                
-                popularity_scores.append(popularity_score)
-                valid_movies.append(mid)
-                valid_indices.append(i)
-                
-                if len(valid_movies) >= top_k:
-                    break
-            
-            print(f"  Valid movies after fallback: {len(valid_movies)}")
-        
-        # 2차 Fallback: popularity 무시, 하이브리드 점수만 사용
-        if len(valid_movies) < top_k:
-            print(f"  -> 2nd fallback: Using hybrid score only (no popularity filter)...")
-            
-            for i, mid in enumerate(movie_ids):
-                if mid in exclude_ids or mid in valid_movies:
-                    continue
-                    
-                meta = self.metadata_map.get(mid, {})
-                
-                # 시간 필터링
-                if max_runtime is not None:
-                    runtime = meta.get('runtime', 0)
-                    try:
-                        runtime = int(runtime) if runtime else 0
-                    except (ValueError, TypeError):
-                        runtime = 0
-                    
-                    if runtime <= 0 or runtime > max_runtime:
-                        continue
-                
-                # 성인물 필터링
-                if not allow_adult:
-                    adult = meta.get('adult', False)
-                    if adult:
-                        continue
-                
-                # popularity 무시, 하이브리드 점수만 사용
-                hybrid_score = scores[i]
-                popularity_score = hybrid_score  # 점수 그대로 사용
-                
-                popularity_scores.append(popularity_score)
-                valid_movies.append(mid)
-                valid_indices.append(i)
-                
-                if len(valid_movies) >= top_k * 2:  # 충분한 후보 확보
-                    break
-            
-            print(f"  Valid movies after 2nd fallback: {len(valid_movies)}")
+        print(f"  Valid movies: {len(valid_movies)}")
         
         if not valid_movies:
             print(f"  -> No valid movies found for Track B!")
             return []
         
-        # 상위 top_k 선정
-        popularity_scores = np.array(popularity_scores)
-        top_indices = np.argsort(popularity_scores)[::-1][:top_k]
+        # 상위 top_k 선정 (하이브리드 점수 기반)
+        valid_scores = np.array(valid_scores)
+        top_indices = np.argsort(valid_scores)[::-1][:top_k]
         
         print(f"  Final Track B movies: {len(top_indices)}")
         
         recommendations = []
         for idx in top_indices:
             mid = valid_movies[idx]
-            original_idx = valid_indices[idx]
             meta = self.metadata_map.get(mid, {})
             
-            print(f"    - Movie {mid}: {meta.get('title_ko', 'Unknown')} (pop_score={popularity_scores[idx]:.4f}, popularity={meta.get('popularity', 0)})")
+            print(f"    - Movie {mid}: {meta.get('title_ko', 'Unknown')} (score={valid_scores[idx]:.4f})")
             
             recommendations.append({
                 'movie_id': mid,
-                'popularity_score': float(popularity_scores[idx]),
-                'hybrid_score': float(scores[original_idx]),
+                'hybrid_score': float(valid_scores[idx]),
                 'title_ko': meta.get('title_ko', 'Unknown'),
                 'genres': meta.get('genres', ''),
                 'runtime': meta.get('runtime', 0),
@@ -550,13 +413,13 @@ class HybridRecommender:
         
         return {
             'track_a': {
-                'label': '당신을 위한 추천',
-                'description': '구독 중인 OTT에서 볼 수 있는 맞춤 추천',
+                'label': '선호 조건 맞춤 추천',
+                'description': '선택하신 장르와 OTT에서 볼 수 있는 맞춤 영화',
                 'movies': track_a
             },
             'track_b': {
-                'label': '지금 HOT한 영화',
-                'description': '많은 사람들이 보고 있는 인기 영화',
+                'label': '장르 확장 추천',
+                'description': '다양한 장르의 맞춤 영화',
                 'movies': track_b_filtered
             }
         }
@@ -617,71 +480,66 @@ class HybridRecommender:
         recommendation_type = 'combination' if available_time >= 240 else 'single'
         max_runtime = None if recommendation_type == 'combination' else available_time
         
-        # 4. 필터링 (Track A용)
-        filtered_ids, filtered_indices = self._apply_filters(
+        # 4-A. Track A용 필터링 (장르 + OTT 적용)
+        filtered_ids_a, filtered_indices_a = self._apply_filters(
             self.common_movie_ids, preferred_genres, preferred_ott, max_runtime, allow_adult
         )
         
-        if not filtered_ids:
-            return recommendation_type, {
-                'session_id': session_id,
-                'recommendations': {'track_a': {'movies': []}, 'track_b': {'movies': []}},
-                'total_results': 0
-            }
+        # 4-B. Track B용 필터링 (장르 + OTT 제거)
+        filtered_ids_b, filtered_indices_b = self._apply_filters(
+            self.common_movie_ids,
+            preferred_genres=None,  # 장르 제거
+            preferred_ott=None,     # OTT 제거
+            max_runtime=max_runtime,
+            allow_adult=allow_adult
+        )
         
-        # 5. 점수 추출 및 정규화
-        filtered_sbert_scores = sbert_scores[filtered_indices]
-        filtered_lightgcn_scores = lightgcn_scores[filtered_indices]
-        
-        norm_sbert = self.scaler.fit_transform(filtered_sbert_scores.reshape(-1, 1)).squeeze()
-        norm_lightgcn = self.scaler.fit_transform(filtered_lightgcn_scores.reshape(-1, 1)).squeeze()
-        
-        final_scores = self.sbert_weight * norm_sbert + self.lightgcn_weight * norm_lightgcn
-        
-        # 6. 본 영화 제외
-        if exclude_seen:
-            for i, mid in enumerate(filtered_ids):
-                if mid in user_movie_ids:
-                    final_scores[i] = -np.inf
-
-        # 7. 결과 반환
+        # 5. 결과 반환
         if recommendation_type == 'single':
-            # Track A: 개인화 추천 (상위 3개)
-            track_a = self._get_track_a_recommendations(
-                filtered_ids, final_scores, top_k=3
-            )
+            # ===== 단일 영화 추천 =====
             
-            # Track B: 인기 추천 (장르, OTT 필터 제외)
-            track_a_ids = [movie['movie_id'] for movie in track_a]
-            
-            # Track B용 필터링 (장르, OTT 제외, 시간+성인물만)
-            trackb_filtered_ids, trackb_filtered_indices = self._apply_filters(
-                self.common_movie_ids,
-                preferred_genres=None,  # 장르 필터 제거
-                preferred_ott=None,     # OTT 필터 제거
-                max_runtime=available_time,
-                allow_adult=allow_adult
-            )
-            
-            if trackb_filtered_ids:
-                # Track B 전용 점수 계산
-                trackb_sbert_scores = sbert_scores[trackb_filtered_indices]
-                trackb_lightgcn_scores = lightgcn_scores[trackb_filtered_indices]
+            # Track A: 장르+OTT 고려한 맞춤 영화 3개
+            if filtered_ids_a:
+                filtered_sbert_scores_a = sbert_scores[filtered_indices_a]
+                filtered_lightgcn_scores_a = lightgcn_scores[filtered_indices_a]
                 
-                trackb_norm_sbert = self.scaler.fit_transform(trackb_sbert_scores.reshape(-1, 1)).squeeze()
-                trackb_norm_lightgcn = self.scaler.fit_transform(trackb_lightgcn_scores.reshape(-1, 1)).squeeze()
+                norm_sbert_a = self.scaler.fit_transform(filtered_sbert_scores_a.reshape(-1, 1)).squeeze()
+                norm_lightgcn_a = self.scaler.fit_transform(filtered_lightgcn_scores_a.reshape(-1, 1)).squeeze()
                 
-                trackb_final_scores = self.sbert_weight * trackb_norm_sbert + self.lightgcn_weight * trackb_norm_lightgcn
+                final_scores_a = self.sbert_weight * norm_sbert_a + self.lightgcn_weight * norm_lightgcn_a
                 
                 # 본 영화 제외
                 if exclude_seen:
-                    for i, mid in enumerate(trackb_filtered_ids):
+                    for i, mid in enumerate(filtered_ids_a):
                         if mid in user_movie_ids:
-                            trackb_final_scores[i] = -np.inf
+                            final_scores_a[i] = -np.inf
                 
+                track_a = self._get_track_a_recommendations(
+                    filtered_ids_a, final_scores_a, top_k=3
+                )
+            else:
+                track_a = []
+            
+            # Track B: 장르+OTT 무시한 맞춤 영화 3개 (Track A 제외)
+            if filtered_ids_b:
+                filtered_sbert_scores_b = sbert_scores[filtered_indices_b]
+                filtered_lightgcn_scores_b = lightgcn_scores[filtered_indices_b]
+                
+                norm_sbert_b = self.scaler.fit_transform(filtered_sbert_scores_b.reshape(-1, 1)).squeeze()
+                norm_lightgcn_b = self.scaler.fit_transform(filtered_lightgcn_scores_b.reshape(-1, 1)).squeeze()
+                
+                final_scores_b = self.sbert_weight * norm_sbert_b + self.lightgcn_weight * norm_lightgcn_b
+                
+                # 본 영화 제외
+                if exclude_seen:
+                    for i, mid in enumerate(filtered_ids_b):
+                        if mid in user_movie_ids:
+                            final_scores_b[i] = -np.inf
+                
+                track_a_ids = [movie['movie_id'] for movie in track_a]
                 track_b = self._get_track_b_recommendations(
-                    trackb_filtered_ids,
-                    trackb_final_scores,
+                    filtered_ids_b,
+                    final_scores_b,
                     top_k=3,
                     exclude_ids=track_a_ids,
                     max_runtime=available_time,
@@ -703,56 +561,109 @@ class HybridRecommender:
                 },
                 'recommendations': recommendations,
                 'total_results': len(track_a) + len(track_b),
-                'recommendation_reason': '회원님의 취향과 최근 인기 영화를 함께 추천드려요'
+                'recommendation_reason': '회원님의 취향 기반 맞춤 영화를 추천드려요'
             }
             
             return recommendation_type, result
             
         else:
             # ===== 조합 추천 =====
-            print("Finding movie combination for available time...")
             
-            # 조합 찾기 (1개만)
-            combination = self._find_movie_combinations(
-                filtered_ids, final_scores, available_time, top_k=1
-            )
+            # Track A: 장르+OTT 고려한 조합 1개
+            if filtered_ids_a:
+                filtered_sbert_scores_a = sbert_scores[filtered_indices_a]
+                filtered_lightgcn_scores_a = lightgcn_scores[filtered_indices_a]
+                
+                norm_sbert_a = self.scaler.fit_transform(filtered_sbert_scores_a.reshape(-1, 1)).squeeze()
+                norm_lightgcn_a = self.scaler.fit_transform(filtered_lightgcn_scores_a.reshape(-1, 1)).squeeze()
+                
+                final_scores_a = self.sbert_weight * norm_sbert_a + self.lightgcn_weight * norm_lightgcn_a
+                
+                # 본 영화 제외
+                if exclude_seen:
+                    for i, mid in enumerate(filtered_ids_a):
+                        if mid in user_movie_ids:
+                            final_scores_a[i] = -np.inf
+                
+                print("Finding movie combination for Track A (with genre/OTT filters)...")
+                combination_a = self._find_movie_combinations(
+                    filtered_ids_a, final_scores_a, available_time, top_k=1
+                )
+                
+                # 조합 메타데이터 추가
+                if combination_a:
+                    combo = combination_a[0]
+                    combo_movies = []
+                    for mid in combo['movies']:
+                        meta = self.metadata_map.get(mid, {})
+                        combo_movies.append({
+                            'movie_id': mid,
+                            'title_ko': meta.get('title_ko', 'Unknown'),
+                            'genres': meta.get('genres', ''),
+                            'runtime': meta.get('runtime', 0),
+                            'release_date': meta.get('release_date', ''),
+                            'popularity': meta.get('popularity', 0),
+                            'adult': meta.get('adult', False),
+                            'ott_providers': self.ott_map.get(mid, [])
+                        })
+                    
+                    track_a_combo = {
+                        'combination_score': combo['avg_score'],
+                        'total_runtime': combo['total_runtime'],
+                        'movies': combo_movies
+                    }
+                else:
+                    track_a_combo = None
+            else:
+                track_a_combo = None
             
-            if not combination:
-                # 조합을 찾지 못한 경우
-                return recommendation_type, {
-                    'session_id': session_id,
-                    'query': {
-                        'duration_minutes': available_time,
-                        'genres': preferred_genres,
-                        'include_adult': allow_adult
-                    },
-                    'recommendations': [],
-                    'total_results': 0,
-                    'recommendation_reason': '조건에 맞는 영화 조합을 찾지 못했습니다.'
+            # Track B: 장르+OTT 무시한 영화 3개
+            if filtered_ids_b:
+                filtered_sbert_scores_b = sbert_scores[filtered_indices_b]
+                filtered_lightgcn_scores_b = lightgcn_scores[filtered_indices_b]
+                
+                norm_sbert_b = self.scaler.fit_transform(filtered_sbert_scores_b.reshape(-1, 1)).squeeze()
+                norm_lightgcn_b = self.scaler.fit_transform(filtered_lightgcn_scores_b.reshape(-1, 1)).squeeze()
+                
+                final_scores_b = self.sbert_weight * norm_sbert_b + self.lightgcn_weight * norm_lightgcn_b
+                
+                # 본 영화 제외
+                if exclude_seen:
+                    for i, mid in enumerate(filtered_ids_b):
+                        if mid in user_movie_ids:
+                            final_scores_b[i] = -np.inf
+                
+                # Track A 조합에 사용된 영화 제외
+                exclude_ids = []
+                if track_a_combo:
+                    exclude_ids = [m['movie_id'] for m in track_a_combo['movies']]
+                
+                track_b_movies = self._get_track_b_recommendations(
+                    filtered_ids_b,
+                    final_scores_b,
+                    top_k=3,
+                    exclude_ids=exclude_ids,
+                    max_runtime=None,  # 조합 추천이므로 시간 제약 없음
+                    allow_adult=allow_adult
+                )
+            else:
+                track_b_movies = []
+            
+            # 병합
+            recommendations = {
+                'track_a': {
+                    'label': '선호 조건 맞춤 조합',
+                    'description': '선택하신 장르와 OTT에서 볼 수 있는 영화 조합',
+                    'combination': track_a_combo
+                },
+                'track_b': {
+                    'label': '추가 추천 영화',
+                    'description': '조합 외 추가로 추천하는 맞춤 영화',
+                    'movies': track_b_movies
                 }
-            
-            # 조합 메타데이터 추가
-            combo = combination[0]
-            combo_movies = []
-            for mid in combo['movies']:
-                meta = self.metadata_map.get(mid, {})
-                combo_movies.append({
-                    'movie_id': mid,
-                    'title_ko': meta.get('title_ko', 'Unknown'),
-                    'genres': meta.get('genres', ''),
-                    'runtime': meta.get('runtime', 0),
-                    'release_date': meta.get('release_date', ''),
-                    'popularity': meta.get('popularity', 0),
-                    'adult': meta.get('adult', False),
-                    'ott_providers': self.ott_map.get(mid, [])
-                })
-            
-            recommendation_data = {
-                'combination_score': combo['avg_score'],
-                'total_runtime': combo['total_runtime'],
-                'movies': combo_movies
             }
             
+            # API 응답 형식
             result = {
                 'session_id': session_id,
                 'query': {
@@ -760,12 +671,13 @@ class HybridRecommender:
                     'genres': preferred_genres,
                     'include_adult': allow_adult
                 },
-                'recommendations': [recommendation_data],
-                'total_results': 1,
-                'recommendation_reason': f'{available_time}분 동안 즐길 수 있는 영화 조합을 추천드려요'
+                'recommendations': recommendations,
+                'total_results': (1 if track_a_combo else 0) + len(track_b_movies),
+                'recommendation_reason': f'{available_time}분 동안 즐길 수 있는 영화 조합과 추가 추천을 드려요'
             }
             
-            return recommendation_type, result       
+            return recommendation_type, result
+
 # -----------------------------------------------------------
 # [사용자 입력 함수 복구]
 # -----------------------------------------------------------
@@ -957,7 +869,7 @@ if __name__ == "__main__":
             print(f"\n[{track_b['label']}]")
             print(f"  {track_b['description']}")
             print("-" * 160)
-            print(f"{'Rank':<4} | {'ID':<6} | {'PopScore':<8} | {'Title (KR)':<25} | {'Year':<4} | {'Runtime':<7} | {'Pop':<8} | {'OTT':<20} | {'Genres'}")
+            print(f"{'Rank':<4} | {'ID':<6} | {'Score':<6} | {'Title (KR)':<25} | {'Year':<4} | {'Runtime':<7} | {'OTT':<20} | {'Genres'}")
             print("-" * 160)
             
             for i, rec in enumerate(track_b['movies'], 1):
@@ -968,7 +880,6 @@ if __name__ == "__main__":
                 if len(genres) > 25: genres = genres[:22] + "..."
                 
                 runtime = str(rec['runtime'])
-                popularity = rec.get('popularity', 0)
                 
                 release_date = str(rec.get('release_date', ''))
                 year = release_date[:4] if len(release_date) >= 4 else "Unk"
@@ -980,18 +891,22 @@ if __name__ == "__main__":
                 if len(ott_str) > 18:
                     ott_str = ott_str[:15] + "..."
 
-                pop_score = rec.get('popularity_score', 0)
-                print(f"{i:<4} | {rec['movie_id']:<6} | {pop_score:.4f} | {title:<25} | {year:<4} | {runtime:<7} | {popularity:<8.2f} | {ott_str:<20} | {genres}")
-        
+                score = rec.get('hybrid_score', 0)
+                print(f"{i:<4} | {rec['movie_id']:<6} | {score:.4f} | {title:<25} | {year:<4} | {runtime:<7} | {ott_str:<20} | {genres}")
+
         else:
-            # 영화 조합 출력
+            # 조합 추천 출력
             recommendations = result['recommendations']
             
-            if not recommendations:
-                print("\n조건에 맞는 영화 조합을 찾지 못했습니다.")
-            else:
-                combo = recommendations[0]
-                print(f"\n[Movie Combination] Total Runtime: {combo['total_runtime']}분 | Avg Score: {combo['combination_score']:.4f}")
+            # Track A: 조합
+            track_a = recommendations['track_a']
+            print(f"\n[{track_a['label']}]")
+            print(f"  {track_a['description']}")
+            print("-" * 160)
+            
+            if track_a['combination']:
+                combo = track_a['combination']
+                print(f"Total Runtime: {combo['total_runtime']}분 | Avg Score: {combo['combination_score']:.4f}")
                 print("-" * 160)
                 print(f"{'#':<2} | {'ID':<6} | {'Title (KR)':<35} | {'Year':<4} | {'Runtime':<7} | {'OTT':<30} | {'Genres'}")
                 print("-" * 160)
@@ -1015,6 +930,38 @@ if __name__ == "__main__":
                         ott_str = ott_str[:25] + "..."
                     
                     print(f"{j:<2} | {movie['movie_id']:<6} | {title:<35} | {year:<4} | {runtime:<7} | {ott_str:<30} | {genres}")
+            else:
+                print("조건에 맞는 영화 조합을 찾지 못했습니다.")
+            
+            # Track B: 단일 영화
+            track_b = recommendations['track_b']
+            print(f"\n[{track_b['label']}]")
+            print(f"  {track_b['description']}")
+            print("-" * 160)
+            print(f"{'Rank':<4} | {'ID':<6} | {'Score':<6} | {'Title (KR)':<25} | {'Year':<4} | {'Runtime':<7} | {'OTT':<20} | {'Genres'}")
+            print("-" * 160)
+            
+            for i, rec in enumerate(track_b['movies'], 1):
+                title = str(rec['title_ko'])
+                if len(title) > 23: title = title[:20] + "..."
+                    
+                genres = str(rec['genres'])
+                if len(genres) > 25: genres = genres[:22] + "..."
+                
+                runtime = str(rec['runtime'])
+                
+                release_date = str(rec.get('release_date', ''))
+                year = release_date[:4] if len(release_date) >= 4 else "Unk"
+                
+                ott_list = rec.get('ott_providers', [])
+                ott_str = ', '.join(ott_list[:2])
+                if len(ott_list) > 2:
+                    ott_str += f" +{len(ott_list)-2}"
+                if len(ott_str) > 18:
+                    ott_str = ott_str[:15] + "..."
+
+                score = rec.get('hybrid_score', 0)
+                print(f"{i:<4} | {rec['movie_id']:<6} | {score:.4f} | {title:<25} | {year:<4} | {runtime:<7} | {ott_str:<20} | {genres}")
         
         # 계속할지 종료할지 선택
         print("\n" + "="*80)

@@ -5,56 +5,27 @@ import os
 from scipy.sparse import csr_matrix, save_npz
 import torch
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split # 추가 필요
+from sklearn.model_selection import train_test_split
 
 # 경로 설정
 DATA_DIR = '/home/ubuntu/ai-model/models/light_gcn/data'
 os.makedirs(DATA_DIR, exist_ok=True)
 
-RATINGS_PATH = '/home/ubuntu/ai-model/datas/data/ratings.csv'
+RATINGS_PATH = '/home/ubuntu/ai-model/datas/data/ratings_tmdb.csv'
 
-print("=== LightGCN Data Preprocessing (Optimized) ===\n")
+print("=== LightGCN Data Preprocessing (TMDB) ===\n")
 
 # 1. 데이터 로드 (필요한 컬럼만)
 print("Loading data...")
-df = pd.read_csv(RATINGS_PATH, usecols=['userId', 'movieId', 'rating', 'timestamp'])
+df = pd.read_csv(RATINGS_PATH, usecols=['userId', 'tmdbId', 'rating', 'timestamp'])
 print(f"Original data: {len(df):,} ratings")
 print(f"Users: {df['userId'].nunique():,}")
-print(f"Movies: {df['movieId'].nunique():,}\n")
+print(f"Movies (TMDB): {df['tmdbId'].nunique():,}\n")
 
 # threshold 설정
-# THRESHOLD = None  # 모든 평점을 positive로 사용
-# THRESHOLD = 3.5
 THRESHOLD = None
 
-# 2. Temporal Split (벡터화 버전)
-def temporal_split_optimized(df, test_ratio=0.2):
-    """벡터화된 시간 기반 분할 - 훨씬 빠름"""
-    print("Performing temporal split...")
-    
-    # timestamp 기준 정렬 (전체 한번에)
-    df_sorted = df.sort_values(['userId', 'timestamp']).reset_index(drop=True)
-    
-    # 각 사용자의 rating 개수 계산
-    user_counts = df_sorted.groupby('userId').size()
-    
-    # 각 사용자별 test 개수 계산 (최소 1개)
-    test_counts = (user_counts * test_ratio).apply(lambda x: max(1, int(x)))
-    
-    # 각 행이 train인지 test인지 표시
-    df_sorted['cumcount'] = df_sorted.groupby('userId').cumcount()
-    df_sorted['total_count'] = df_sorted['userId'].map(user_counts)
-    df_sorted['test_threshold'] = df_sorted['userId'].map(lambda x: user_counts[x] - test_counts[x])
-    
-    # Train/Test 분할
-    train_mask = df_sorted['cumcount'] < df_sorted['test_threshold']
-    
-    train_df = df_sorted[train_mask][['userId', 'movieId', 'rating', 'timestamp']].copy()
-    test_df = df_sorted[~train_mask][['userId', 'movieId', 'rating', 'timestamp']].copy()
-    
-    return train_df, test_df
-
-# [핵심 변경 2] Random Split 함수
+# 2. Random Split 함수
 def random_split(df, test_ratio=0.2):
     print("Performing Random Split (8:2)...")
     
@@ -63,31 +34,26 @@ def random_split(df, test_ratio=0.2):
         df = df[df['rating'] >= THRESHOLD].copy()
         print(f"Filtered ratings < {THRESHOLD}")
     
-    # 2. 유저별로 최소 5개 이상의 로그가 있는 경우만 살리기 (노이즈 제거)
-    # (너무 적은 유저는 Train/Test 나누기가 애매하므로)
+    # 2. 유저별로 최소 5개 이상의 로그가 있는 경우만 살리기
     user_counts = df.groupby('userId').size()
     valid_users = user_counts[user_counts >= 5].index
     df = df[df['userId'].isin(valid_users)].copy()
     print(f"Filtered users with < 5 interactions. Remaining: {len(df):,}")
 
     # 3. Stratified Split (유저별 비율 유지하며 랜덤 분할)
-    # sklearn의 train_test_split 사용 (stratify 옵션)
     train_df, test_df = train_test_split(
         df, 
         test_size=test_ratio, 
         random_state=42, 
-        stratify=df['userId'] # 유저별로 골고루 8:2가 되도록
+        stratify=df['userId']
     )
     
     return train_df, test_df
 
-# 타임스태프로 분할
-# train_df, test_df = temporal_split_optimized(df, test_ratio=0.2)
-
-# 랜덤으로 분할
+# 랜덤 분할
 train_df, test_df = random_split(df, test_ratio=0.2)
 
-print("=== Temporal Split (80:20) ===")
+print("=== Random Split (80:20) ===")
 print(f"Train: {len(train_df):,} ({len(train_df)/len(df)*100:.2f}%)")
 print(f"Test: {len(test_df):,} ({len(test_df)/len(df)*100:.2f}%)\n")
 
@@ -96,14 +62,13 @@ print("Saving split data...")
 train_df.to_csv(os.path.join(DATA_DIR, 'train_ratings.csv'), index=False)
 test_df.to_csv(os.path.join(DATA_DIR, 'test_ratings.csv'), index=False)
 
-# 3. Implicit Feedback 변환 (벡터화)
+# 3. Implicit Feedback 변환
 def convert_to_implicit(df, threshold=None):
     """벡터화된 implicit 변환"""
     if threshold is None:
         return df.copy()
     else:
         return df[df['rating'] >= threshold].copy()
-
 
 print("Converting to implicit feedback...")
 train_implicit = convert_to_implicit(train_df, threshold=THRESHOLD)
@@ -118,7 +83,7 @@ print(f"Test: {len(test_df):,} -> {len(test_implicit):,}\n")
 train_implicit.to_csv(os.path.join(DATA_DIR, 'train_implicit.csv'), index=False)
 test_implicit.to_csv(os.path.join(DATA_DIR, 'test_implicit.csv'), index=False)
 
-# 4. User/Item ID 재매핑 (벡터화)
+# 4. User/Item ID 재매핑
 class DataProcessor:
     def __init__(self, train_df, test_df):
         print("Creating ID mappings...")
@@ -126,25 +91,25 @@ class DataProcessor:
         self.train_df = train_df
         self.test_df = test_df
         
-        # 모든 unique user와 item 수집 (벡터화)
+        # 모든 unique user와 item 수집 (tmdbId 사용)
         all_users = np.union1d(train_df['userId'].unique(), test_df['userId'].unique())
-        all_items = np.union1d(train_df['movieId'].unique(), test_df['movieId'].unique())
+        all_items = np.union1d(train_df['tmdbId'].unique(), test_df['tmdbId'].unique())
         
         # ID 매핑 생성
         self.user2id = {user: idx for idx, user in enumerate(all_users)}
-        self.item2id = {item: idx for idx, item in enumerate(all_items)}
+        self.tmdb2id = {tmdb: idx for idx, tmdb in enumerate(all_items)}
         
         self.id2user = {idx: user for user, idx in self.user2id.items()}
-        self.id2item = {idx: item for item, idx in self.item2id.items()}
+        self.id2tmdb = {idx: tmdb for tmdb, idx in self.tmdb2id.items()}
         
         self.n_users = len(self.user2id)
-        self.n_items = len(self.item2id)
+        self.n_items = len(self.tmdb2id)
     
     def remap_ids(self, df):
-        """벡터화된 ID 재매핑"""
+        """벡터화된 ID 재매핑 (tmdbId 기반)"""
         df_remapped = df.copy()
         df_remapped['user_idx'] = df_remapped['userId'].map(self.user2id)
-        df_remapped['item_idx'] = df_remapped['movieId'].map(self.item2id)
+        df_remapped['item_idx'] = df_remapped['tmdbId'].map(self.tmdb2id)
         return df_remapped
     
     def create_interaction_matrix(self, df):
@@ -181,12 +146,12 @@ class DataProcessor:
         return torch.LongTensor(edge_index)
     
     def save(self, save_dir):
-        """매핑 정보 저장"""
+        """매핑 정보 저장 (tmdb 매핑 포함)"""
         mappings = {
             'user2id': self.user2id,
-            'item2id': self.item2id,
+            'tmdb2id': self.tmdb2id,
             'id2user': self.id2user,
-            'id2item': self.id2item,
+            'id2tmdb': self.id2tmdb,
             'n_users': self.n_users,
             'n_items': self.n_items
         }
@@ -199,7 +164,7 @@ processor = DataProcessor(train_implicit, test_implicit)
 
 print("\n=== ID Remapping ===")
 print(f"Total users: {processor.n_users:,}")
-print(f"Total items: {processor.n_items:,}\n")
+print(f"Total items (TMDB): {processor.n_items:,}\n")
 
 # 재매핑된 데이터 생성 및 저장
 print("Remapping IDs...")
@@ -269,7 +234,7 @@ saved_files = [
     'train_matrix.npz',           # Train interaction matrix
     'test_matrix.npz',            # Test interaction matrix
     'edge_index.pt',              # Graph edge index
-    'id_mappings.pkl',            # ID 매핑 정보
+    'id_mappings.pkl',            # ID 매핑 정보 (tmdb 포함)
     'metadata.pkl'                # 메타데이터
 ]
 
