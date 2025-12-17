@@ -9,6 +9,8 @@ from typing import List, Optional, Tuple
 from itertools import combinations
 from math import comb
 import time
+from dotenv import load_dotenv
+import os
 
 """
 Hybrid Recommender with PostgreSQL Database
@@ -476,13 +478,13 @@ class HybridRecommender:
         # 4. Track A 필터링 (장르 + 연도 + OTT 적용)
         filtered_ids_a, filtered_indices_a = self._apply_filters(
             self.common_movie_ids, preferred_genres, max_runtime,
-            min_year=2010, preferred_otts=preferred_otts
+            min_year=2000, preferred_otts=preferred_otts
         )
         
         # 5. Track B 필터링 (장르 무시, 연도 + OTT 적용)
         filtered_ids_b, filtered_indices_b = self._apply_filters(
             self.common_movie_ids, None, max_runtime,
-            min_year=2010, preferred_otts=preferred_otts
+            min_year=2000, preferred_otts=preferred_otts
         )
         
         if recommendation_type == 'single':
@@ -1000,13 +1002,28 @@ def print_results(rec_type: str, result: dict):
 # 실행
 # ============================================================
 if __name__ == "__main__":
+
+    db_host = os.getenv("DATABASE_HOST")
+    db_port = os.getenv("DATABASE_PORT")
+    db_name = os.getenv("DATABASE_NAME")
+    db_user = os.getenv("DATABASE_USER")
+    db_password = os.getenv("DATABASE_PASSWORD")
+
     # DB 연결 설정 (환경에 맞게 수정)
+    # DB_CONFIG = {
+    #     'host': 'localhost,
+    #     'port': 5432,
+    #     'database': 'moviesir',
+    #     'user': 'movigation',
+    #     'password': 'nLbQ80/sqt3Lil3zeBaPxkK51tMSQB2b'  # 실제 비밀번호로 변경
+    # }
+
     DB_CONFIG = {
-        'host': 'localhost',
-        'port': 5432,
-        'database': 'moviesir',
-        'user': 'movigation',
-        'password': 'nLbQ80/sqt3Lil3zeBaPxkK51tMSQB2b'  # 실제 비밀번호로 변경
+        'host': db_host,
+        'port': db_port,
+        'database': db_name,
+        'user': db_user,
+        'password': db_password  # 실제 비밀번호로 변경
     }
     
     # LightGCN 모델 경로 (파일 기반 유지)
@@ -1029,9 +1046,10 @@ if __name__ == "__main__":
         print("\n" + "="*80)
         print("INITIALIZATION COMPLETE")
         print("="*80)
-        
+
         # 테스트 사용자
-        user_movies = [854, 138843]
+        # user_movies = [854, 138843]
+        user_movies = [75656, 9502, 955]
         
         while True:
             print("\n" + "="*80)
