@@ -1009,14 +1009,7 @@ if __name__ == "__main__":
     db_user = os.getenv("DATABASE_USER")
     db_password = os.getenv("DATABASE_PASSWORD")
 
-    # DB 연결 설정 (환경에 맞게 수정)
-    # DB_CONFIG = {
-    #     'host': 'localhost,
-    #     'port': 5432,
-    #     'database': 'moviesir',
-    #     'user': 'movigation',
-    #     'password': 'nLbQ80/sqt3Lil3zeBaPxkK51tMSQB2b'  # 실제 비밀번호로 변경
-    # }
+    
 
     DB_CONFIG = {
         'host': db_host,
