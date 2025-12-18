@@ -15,15 +15,10 @@ import os
 """
 Hybrid Recommender with PostgreSQL Database
 - SBERT (70%) + LightGCN (30%)
-- 장르, 런타임, OTT 필터링 지원
+- Onboarding: 대표 영화 10개 중복 선택
+- 추천 풀 확대: 히스토리 관리 + 다양성 증대
 - 240분 미만: 단일 영화 추천 (Track A, B)
 - 240분 이상: 영화 조합 추천 (Track A, B 모두 조합)
-
-DB 테이블:
-- movies: 영화 메타데이터
-- movie_vectors: SBERT 임베딩
-- ott_providers: OTT 마스터
-- movie_ott_map: 영화-OTT 연결
 """
 
 
@@ -72,13 +67,6 @@ class HybridRecommender:
         """
         Args:
             db_config: PostgreSQL 연결 설정
-                {
-                    'host': 'localhost',
-                    'port': 5432,
-                    'database': 'moviesir',
-                    'user': 'postgres',
-                    'password': 'password'
-                }
             lightgcn_model_path: LightGCN 모델 경로
             lightgcn_data_path: LightGCN 데이터 경로
             sbert_weight: SBERT 가중치 (기본 0.7)
@@ -94,16 +82,14 @@ class HybridRecommender:
         
         print("Initializing Hybrid Recommender (DB Mode)...")
         
-        # 1. 데이터 로드 (DB에서)
+        # 데이터 로드
         self._load_metadata_from_db()
         self._load_sbert_data_from_db()
         self._load_ott_data_from_db()
-        
-        # 2. LightGCN 로드 (파일에서 - 학습된 모델)
         self._load_lightgcn_data(lightgcn_data_path)
         self._load_lightgcn_model(lightgcn_model_path)
         
-        # 3. Pre-alignment
+        # Pre-alignment
         print("Pre-aligning models for fast inference...")
         
         common_ids = set(self.sbert_movie_to_idx.keys()) & set(self.lightgcn_movie_to_idx.keys())
@@ -129,7 +115,11 @@ class HybridRecommender:
         print(f"Pre-alignment complete. Target movies: {len(self.common_movie_ids)}")
         
         self.scaler = MinMaxScaler()
-        self.recommendation_history = []
+        
+        # 추천 히스토리 (Track A, B 분리 관리)
+        self.track_a_history = []
+        self.track_b_history = []
+        self.global_history = []
 
     def _load_metadata_from_db(self):
         """DB에서 영화 메타데이터 로드"""
@@ -152,7 +142,6 @@ class HybridRecommender:
         
         rows = self.db.execute_query(query)
         
-        # metadata_map 구성 (tmdb_id를 키로)
         self.metadata_map = {}
         for row in rows:
             tmdb_id = row['tmdb_id']
@@ -161,7 +150,7 @@ class HybridRecommender:
                 'tmdb_id': tmdb_id,
                 'title': row['title'],
                 'runtime': row['runtime'] or 0,
-                'genres': row['genres'] or [],  # VARCHAR[] → Python list
+                'genres': row['genres'] or [],
                 'overview': row['overview'] or '',
                 'poster_path': row['poster_path'],
                 'release_date': str(row['release_date']) if row['release_date'] else '',
@@ -169,7 +158,6 @@ class HybridRecommender:
                 'popularity': row['popularity'] or 0
             }
         
-        # 장르 리스트 추출
         all_genres = set()
         for movie_data in self.metadata_map.values():
             genres = movie_data.get('genres', [])
@@ -202,10 +190,8 @@ class HybridRecommender:
         
         for row in rows:
             tmdb_id = row['tmdb_id']
-            # pgvector는 문자열로 반환될 수 있음 → numpy 배열로 변환
             embedding = row['embedding']
             if isinstance(embedding, str):
-                # '[0.1, 0.2, ...]' 형태 파싱
                 embedding = np.fromstring(embedding.strip('[]'), sep=',', dtype='float32')
             elif isinstance(embedding, list):
                 embedding = np.array(embedding, dtype='float32')
@@ -224,7 +210,6 @@ class HybridRecommender:
         """DB에서 OTT 데이터 로드"""
         print("Loading OTT data from database...")
         
-        # OTT 제공자 목록
         ott_query = """
             SELECT provider_id, provider_name
             FROM ott_providers
@@ -235,7 +220,6 @@ class HybridRecommender:
         self.ott_id_to_name = {row['provider_id']: row['provider_name'] for row in ott_rows}
         self.all_otts = [row['provider_name'] for row in ott_rows]
         
-        # 영화-OTT 매핑
         map_query = """
             SELECT 
                 m.tmdb_id,
@@ -259,7 +243,7 @@ class HybridRecommender:
         print(f"  Available OTTs: {self.all_otts}")
 
     def _load_lightgcn_data(self, data_path: str):
-        """LightGCN 매핑 데이터 로드 (파일)"""
+        """LightGCN 매핑 데이터 로드"""
         data_path = Path(data_path)
         with open(data_path / 'id_mappings.pkl', 'rb') as f:
             mappings = pickle.load(f)
@@ -270,7 +254,7 @@ class HybridRecommender:
         print(f"  LightGCN movies: {len(self.lightgcn_movie_to_idx):,}")
 
     def _load_lightgcn_model(self, model_path: str):
-        """LightGCN 모델 로드 (파일)"""
+        """LightGCN 모델 로드"""
         print(f"Loading LightGCN model from {model_path}")
         checkpoint = torch.load(model_path, map_location=self.device)
         
@@ -281,6 +265,41 @@ class HybridRecommender:
                 self.lightgcn_item_embeddings = checkpoint['item_embeddings'].cpu().numpy()
             else:
                 self.lightgcn_item_embeddings = checkpoint['item_embedding.weight'].cpu().numpy()
+
+    def get_onboarding_candidates(self) -> List[dict]:
+        """온보딩용 대표 영화 10개 반환"""
+        query = """
+            SELECT 
+                m.tmdb_id,
+                m.title,
+                m.genres,
+                m.overview,
+                m.poster_path,
+                m.release_date,
+                m.vote_average,
+                m.popularity
+            FROM onboarding_candidates oc
+            JOIN movies m ON oc.movie_id = m.movie_id
+            ORDER BY oc.movie_id
+            LIMIT 10
+        """
+        
+        rows = self.db.execute_query(query)
+        
+        candidates = []
+        for row in rows:
+            candidates.append({
+                'tmdb_id': row['tmdb_id'],
+                'title': row['title'],
+                'genres': row['genres'] or [],
+                'overview': row['overview'] or '',
+                'poster_path': row['poster_path'],
+                'release_date': str(row['release_date']) if row['release_date'] else '',
+                'vote_average': row['vote_average'] or 0,
+                'popularity': row['popularity'] or 0
+            })
+        
+        return candidates
 
     def _get_movie_runtime(self, movie_id: int) -> int:
         """영화 런타임 반환 (분)"""
@@ -297,10 +316,11 @@ class HybridRecommender:
         preferred_genres: Optional[List[str]] = None,
         max_runtime: Optional[int] = None,
         min_year: Optional[int] = None,
-        preferred_otts: Optional[List[str]] = None
+        preferred_otts: Optional[List[str]] = None,
+        exclude_history: Optional[List[int]] = None
     ) -> Tuple[List[int], List[int]]:
         """
-        필터링 적용 (장르, 런타임, 연도, OTT)
+        필터링 적용 (장르, 런타임, 연도, OTT, 히스토리)
         
         Returns:
             (filtered_ids, filtered_indices)
@@ -308,12 +328,18 @@ class HybridRecommender:
         filtered_indices = []
         filtered_ids = []
         
+        exclude_set = set(exclude_history) if exclude_history else set()
+        
         for i, movie_id in enumerate(movie_ids):
+            # 히스토리 제외
+            if movie_id in exclude_set:
+                continue
+            
             meta = self.metadata_map.get(movie_id, {})
             if not meta:
                 continue
             
-            # 1. 런타임 필터링
+            # 런타임 필터링
             if max_runtime is not None:
                 runtime = meta.get('runtime', 0)
                 try:
@@ -324,7 +350,7 @@ class HybridRecommender:
                 if runtime <= 0 or runtime > max_runtime:
                     continue
             
-            # 2. 연도 필터링
+            # 연도 필터링
             if min_year is not None:
                 release_date = meta.get('release_date', '')
                 if release_date:
@@ -337,17 +363,16 @@ class HybridRecommender:
                 else:
                     continue
             
-            # 3. 장르 필터링 (DB는 이미 배열)
+            # 장르 필터링
             if preferred_genres:
                 genres = meta.get('genres', [])
                 if not genres:
                     continue
                 
-                # 선호 장르와 교집합 확인
                 if not any(g in genres for g in preferred_genres):
                     continue
             
-            # 4. OTT 필터링
+            # OTT 필터링
             if preferred_otts:
                 movie_otts = self.movie_ott_map.get(movie_id, [])
                 if not any(ott in movie_otts for ott in preferred_otts):
@@ -445,7 +470,7 @@ class HybridRecommender:
         
         start_time = time.time()
         
-        # 1. 사용자 프로필 생성
+        # 사용자 프로필 생성
         user_sbert_vecs = []
         for mid in user_movie_ids:
             if mid in self.sbert_movie_to_idx:
@@ -467,24 +492,32 @@ class HybridRecommender:
         
         user_gcn_profile = np.mean(user_gcn_vecs, axis=0)
         
-        # 2. 전체 점수 계산
+        # 전체 점수 계산
         sbert_scores = self.target_sbert_norm @ user_sbert_profile
         lightgcn_scores = self.target_lightgcn_matrix @ user_gcn_profile
         
-        # 3. 추천 타입 결정
+        # 추천 타입 결정
         recommendation_type = 'combination' if available_time >= 240 else 'single'
         max_runtime = None if recommendation_type == 'combination' else available_time
         
-        # 4. Track A 필터링 (장르 + 연도 + OTT 적용)
+        # Track A 필터링 (장르 + OTT + 히스토리)
         filtered_ids_a, filtered_indices_a = self._apply_filters(
-            self.common_movie_ids, preferred_genres, max_runtime,
-            min_year=2000, preferred_otts=preferred_otts
+            self.common_movie_ids, 
+            preferred_genres, 
+            max_runtime,
+            min_year=2000, 
+            preferred_otts=preferred_otts,
+            exclude_history=self.track_a_history[-30:]  # 최근 30개 제외
         )
         
-        # 5. Track B 필터링 (장르 무시, 연도 + OTT 적용)
+        # Track B 필터링 (장르 무시 + OTT + 히스토리)
         filtered_ids_b, filtered_indices_b = self._apply_filters(
-            self.common_movie_ids, None, max_runtime,
-            min_year=2000, preferred_otts=preferred_otts
+            self.common_movie_ids, 
+            None,  # 장르 무시
+            max_runtime,
+            min_year=2000, 
+            preferred_otts=preferred_otts,
+            exclude_history=self.track_b_history[-30:]  # 최근 30개 제외
         )
         
         if recommendation_type == 'single':
@@ -505,14 +538,11 @@ class HybridRecommender:
                         if mid in user_movie_ids:
                             final_scores_a[i] = -np.inf
                 
-                for i, mid in enumerate(filtered_ids_a):
-                    if mid in self.recommendation_history[-9:]:
-                        final_scores_a[i] = -np.inf
-                
+                # 추천 풀 확대: Top 20에서 랜덤 선택
                 valid_indices_a = [i for i, score in enumerate(final_scores_a) if score != -np.inf]
-                if len(valid_indices_a) >= 10:
-                    top_10_indices_a = sorted(valid_indices_a, key=lambda i: final_scores_a[i], reverse=True)[:10]
-                    selected_indices_a = np.random.choice(top_10_indices_a, size=min(3, len(top_10_indices_a)), replace=False)
+                if len(valid_indices_a) >= 20:
+                    top_20_indices_a = sorted(valid_indices_a, key=lambda i: final_scores_a[i], reverse=True)[:20]
+                    selected_indices_a = np.random.choice(top_20_indices_a, size=min(3, len(top_20_indices_a)), replace=False)
                 elif len(valid_indices_a) >= 3:
                     top_indices_a = sorted(valid_indices_a, key=lambda i: final_scores_a[i], reverse=True)[:3]
                     selected_indices_a = top_indices_a
@@ -521,8 +551,10 @@ class HybridRecommender:
                 
                 track_a = self._build_recommendations(filtered_ids_a, final_scores_a, selected_indices_a)
                 
+                # Track A 히스토리 업데이트
                 for rec in track_a:
-                    self.recommendation_history.append(rec['tmdb_id'])
+                    self.track_a_history.append(rec['tmdb_id'])
+                    self.global_history.append(rec['tmdb_id'])
             else:
                 track_a = []
             
@@ -541,15 +573,13 @@ class HybridRecommender:
                         if mid in user_movie_ids:
                             final_scores_b[i] = -np.inf
                 
+                # Track A 영화 제외
                 track_a_ids = [m['tmdb_id'] for m in track_a]
                 for i, mid in enumerate(filtered_ids_b):
                     if mid in track_a_ids:
                         final_scores_b[i] = -np.inf
                 
-                for i, mid in enumerate(filtered_ids_b):
-                    if mid in self.recommendation_history[-9:]:
-                        final_scores_b[i] = -np.inf
-                
+                # 장르 다양성 부스팅
                 track_a_genres = set()
                 if preferred_genres:
                     track_a_genres.update(preferred_genres)
@@ -564,20 +594,23 @@ class HybridRecommender:
                     if track_a_genres and genres and not any(g in track_a_genres for g in genres):
                         final_scores_b[i] *= 1.3
                 
-                valid_indices = [i for i, score in enumerate(final_scores_b) if score != -np.inf]
-                if len(valid_indices) >= 10:
-                    top_10_indices = sorted(valid_indices, key=lambda i: final_scores_b[i], reverse=True)[:10]
-                    selected_indices = np.random.choice(top_10_indices, size=min(3, len(top_10_indices)), replace=False)
-                elif len(valid_indices) >= 3:
-                    top_indices = sorted(valid_indices, key=lambda i: final_scores_b[i], reverse=True)[:3]
-                    selected_indices = top_indices
+                # 추천 풀 확대: Top 20에서 랜덤 선택
+                valid_indices_b = [i for i, score in enumerate(final_scores_b) if score != -np.inf]
+                if len(valid_indices_b) >= 20:
+                    top_20_indices_b = sorted(valid_indices_b, key=lambda i: final_scores_b[i], reverse=True)[:20]
+                    selected_indices_b = np.random.choice(top_20_indices_b, size=min(3, len(top_20_indices_b)), replace=False)
+                elif len(valid_indices_b) >= 3:
+                    top_indices_b = sorted(valid_indices_b, key=lambda i: final_scores_b[i], reverse=True)[:3]
+                    selected_indices_b = top_indices_b
                 else:
-                    selected_indices = valid_indices
+                    selected_indices_b = valid_indices_b
                 
-                track_b = self._build_recommendations(filtered_ids_b, final_scores_b, selected_indices)
+                track_b = self._build_recommendations(filtered_ids_b, final_scores_b, selected_indices_b)
                 
+                # Track B 히스토리 업데이트
                 for rec in track_b:
-                    self.recommendation_history.append(rec['tmdb_id'])
+                    self.track_b_history.append(rec['tmdb_id'])
+                    self.global_history.append(rec['tmdb_id'])
             else:
                 track_b = []
             
@@ -638,6 +671,11 @@ class HybridRecommender:
                         'total_runtime': combo['total_runtime'],
                         'movies': combo_movies
                     }
+                    
+                    # 히스토리 업데이트
+                    for movie in combo_movies:
+                        self.track_a_history.append(movie['tmdb_id'])
+                        self.global_history.append(movie['tmdb_id'])
                 else:
                     track_a_combo = None
             else:
@@ -658,16 +696,13 @@ class HybridRecommender:
                         if mid in user_movie_ids:
                             final_scores_b[i] = -np.inf
                 
+                # Track A 조합 영화 제외
                 exclude_ids = []
                 if track_a_combo:
                     exclude_ids = [m['tmdb_id'] for m in track_a_combo['movies']]
                 
                 for i, mid in enumerate(filtered_ids_b):
                     if mid in exclude_ids:
-                        final_scores_b[i] = -np.inf
-                
-                for i, mid in enumerate(filtered_ids_b):
-                    if mid in self.recommendation_history[-9:]:
                         final_scores_b[i] = -np.inf
                 
                 combination_b = self._find_movie_combinations(
@@ -694,8 +729,10 @@ class HybridRecommender:
                         'movies': combo_movies
                     }
                     
+                    # 히스토리 업데이트
                     for movie in combo_movies:
-                        self.recommendation_history.append(movie['tmdb_id'])
+                        self.track_b_history.append(movie['tmdb_id'])
+                        self.global_history.append(movie['tmdb_id'])
                 else:
                     track_b_combo = None
             else:
@@ -724,7 +761,6 @@ class HybridRecommender:
             mid = movie_ids[idx]
             meta = self.metadata_map.get(mid, {})
             
-            # genres는 이미 리스트
             genres = meta.get('genres', [])
             
             recommendations.append({
@@ -741,6 +777,90 @@ class HybridRecommender:
     def close(self):
         """리소스 정리"""
         self.db.close()
+
+
+# ============================================================
+# 온보딩 함수
+# ============================================================
+def onboarding_movie_selection(recommender: HybridRecommender) -> List[int]:
+    """온보딩: 대표 영화 10개 복수 선택"""
+    
+    print("\n" + "="*80)
+    print("ONBOARDING - 선호 영화 선택")
+    print("="*80)
+    print("※ 선호하는 영화를 쉼표(,)로 구분하여 여러 개 선택하세요")
+    print("   예) 1,2,5,7 → 1번, 2번, 5번, 7번 영화 선택")
+    print("-" * 80)
+    
+    candidates = recommender.get_onboarding_candidates()
+    
+    if not candidates:
+        print("❌ 온보딩 대표 영화를 불러올 수 없습니다.")
+        return []
+    
+    print("\n대표 영화 목록:")
+    print("-" * 80)
+    for i, movie in enumerate(candidates, 1):
+        genres_str = ', '.join(movie['genres'][:3])
+        if len(movie['genres']) > 3:
+            genres_str += f" +{len(movie['genres'])-3}"
+        
+        title = movie['title']
+        if len(title) > 35:
+            title = title[:32] + "..."
+        
+        print(f"{i:2d}. {title:<38} [{genres_str}]")
+    
+    print("\n" + "-" * 80)
+    
+    while True:
+        user_input = input("영화 번호 입력 (쉼표로 구분, 예: 1,2,5): ").strip()
+        
+        if not user_input:
+            print("최소 1개 이상의 영화를 선택해주세요.")
+            continue
+        
+        try:
+            # 쉼표로 분리하고 공백 제거
+            choices = [x.strip() for x in user_input.split(',')]
+            selected_indices = []
+            invalid_choices = []
+            
+            for choice in choices:
+                idx = int(choice)
+                if 1 <= idx <= len(candidates):
+                    if idx in selected_indices:
+                        print(f"⚠️  '{choice}'번 영화는 이미 선택되었습니다 (중복 제거)")
+                    else:
+                        selected_indices.append(idx)
+                else:
+                    invalid_choices.append(choice)
+            
+            if invalid_choices:
+                print(f"⚠️  유효하지 않은 번호: {', '.join(invalid_choices)} (1-{len(candidates)} 범위)")
+            
+            if selected_indices:
+                # tmdb_id로 변환
+                selected_ids = [candidates[idx - 1]['tmdb_id'] for idx in selected_indices]
+                break
+            else:
+                print("유효한 영화를 선택해주세요.")
+                
+        except ValueError:
+            print("올바른 형식으로 입력해주세요. (예: 1,2,3,5)")
+    
+    # 선택된 영화 출력
+    print("\n" + "="*80)
+    print("선택 완료!")
+    print("="*80)
+    for idx in sorted(selected_indices):
+        movie_info = candidates[idx - 1]
+        print(f"✓ {movie_info['title']}")
+    
+    print(f"\n총 {len(selected_ids)}개 영화 선택")
+    print("="*80)
+    
+    return selected_ids
 
 
 # ============================================================
@@ -1011,22 +1131,15 @@ if __name__ == "__main__":
     db_user = os.getenv("DATABASE_USER")
     db_password = os.getenv("DATABASE_PASSWORD")
 
-    
-
     DB_CONFIG = {
         'host': db_host,
         'port': db_port,
         'database': db_name,
         'user': db_user,
-        'password': db_password  # 실제 비밀번호로 변경
+        'password': db_password
     }
     
-    # 프로젝트 루트 경로 계산 (real_test 상위 폴더)
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    # LightGCN 모델 경로 (파일 기반 유지)
-    # LIGHTGCN_MODEL_PATH = "/home/ubuntu/ai-model/models/light_gcn/checkpoints/best_model.pt"
-    # LIGHTGCN_DATA_PATH = "/home/ubuntu/ai-model/models/light_gcn/data"
     LIGHTGCN_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "light_gcn", "checkpoints", "best_model.pt")
     LIGHTGCN_DATA_PATH = os.path.join(PROJECT_ROOT, "models", "light_gcn", "data")
     
@@ -1047,17 +1160,27 @@ if __name__ == "__main__":
         print("INITIALIZATION COMPLETE")
         print("="*80)
 
-        # 테스트 사용자
-        # user_movies = [854, 138843]
-        user_movies = [75656, 9502, 955]
+        # 온보딩: 대표 영화 선택
+        user_movies = onboarding_movie_selection(recommender)
+        
+        if not user_movies:
+            print("영화 선택이 완료되지 않았습니다. 프로그램을 종료합니다.")
+            recommender.close()
+            exit()
         
         while True:
             print("\n" + "="*80)
-            print("USER INPUT MOVIES")
+            print("USER SELECTED MOVIES")
             print("="*80)
-            for mid in user_movies:
+            
+            # 선택된 영화 중복 제거 후 카운트
+            from collections import Counter
+            movie_counter = Counter(user_movies)
+            
+            for mid, count in movie_counter.items():
                 meta = recommender.metadata_map.get(mid, {})
-                print(f"  {mid}: {meta.get('title', 'Unknown')}")
+                count_str = f" (x{count})" if count > 1 else ""
+                print(f"  {mid}: {meta.get('title', 'Unknown')}{count_str}")
             
             if hasattr(recommender, '_last_filters'):
                 print("\n1. 새로운 조건으로 추천받기")
@@ -1096,4 +1219,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ 오류 발생: {e}")
         import traceback
-        traceback.print_exc
+        traceback.print_exc()
