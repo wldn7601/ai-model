@@ -19,12 +19,18 @@ def load_ratings_data(csv_path: Path) -> pd.DataFrame:
         csv_path: CSV 파일 경로
         
     Returns:
-        DataFrame with userId, movieId, rating columns
+        DataFrame with userId, tmdbId, rating columns
     """
     logger.info(f"Loading data from {csv_path}")
     df = pd.read_csv(csv_path)
     
-    # 컬럼명 확인 및 정규화
+    # 컬럼명 확인 - tmdbId 사용
+    if 'tmdbId' in df.columns:
+        # tmdbId를 movieId로 rename (코드 일관성 유지)
+        df = df.rename(columns={'tmdbId': 'movieId'})
+    elif 'movieId' not in df.columns:
+        raise ValueError(f"Required column 'tmdbId' or 'movieId' not found in {csv_path}")
+    
     required_cols = ['userId', 'movieId', 'rating']
     for col in required_cols:
         if col not in df.columns:
@@ -32,11 +38,10 @@ def load_ratings_data(csv_path: Path) -> pd.DataFrame:
     
     logger.info(f"Loaded {len(df):,} ratings")
     logger.info(f"Unique users: {df['userId'].nunique():,}")
-    logger.info(f"Unique movies: {df['movieId'].nunique():,}")
+    logger.info(f"Unique movies (TMDB IDs): {df['movieId'].nunique():,}")
     
     return df[required_cols]
 
-# src/data_preprocessing.py
 
 def create_id_mappings(
     df: pd.DataFrame
@@ -50,8 +55,8 @@ def create_id_mappings(
     Returns:
         user_to_idx: {원본 userId: 내부 index}
         idx_to_user: {내부 index: 원본 userId}
-        movie_to_idx: {원본 movieId: 내부 index}
-        idx_to_movie: {내부 index: 원본 movieId}
+        movie_to_idx: {원본 movieId(tmdbId): 내부 index}
+        idx_to_movie: {내부 index: 원본 movieId(tmdbId)}
     """
     logger.info("Creating ID mappings")
     
@@ -60,7 +65,7 @@ def create_id_mappings(
     user_to_idx = {user_id: idx for idx, user_id in enumerate(unique_users)}
     idx_to_user = {idx: user_id for user_id, idx in user_to_idx.items()}
     
-    # Movie 매핑
+    # Movie 매핑 (TMDB ID)
     unique_movies = sorted(df['movieId'].unique())
     movie_to_idx = {movie_id: idx for idx, movie_id in enumerate(unique_movies)}
     idx_to_movie = {idx: movie_id for movie_id, idx in movie_to_idx.items()}
@@ -69,36 +74,35 @@ def create_id_mappings(
     
     return user_to_idx, idx_to_user, movie_to_idx, idx_to_movie
 
+
 def convert_to_implicit_confidence(
     df: pd.DataFrame, 
-    alpha: float = 40.0,
+    alpha: float = 20.0,
     min_rating: float = 3.0
 ) -> pd.DataFrame:
     """
-    Explicit ratings를 Implicit binary feedback + confidence로 변환
+    Explicit ratings를 Implicit confidence로 변환
     
     Args:
         df: DataFrame with 'rating' column
         alpha: Confidence scaling parameter
-        min_rating: 이 값 이상만 positive feedback (1)
+        min_rating: 이 값 이상만 positive feedback
         
     Returns:
-        DataFrame with 'preference' (0 or 1) and 'confidence' columns
+        DataFrame with 'confidence' column
     """
-    logger.info(f"Converting to implicit feedback (alpha={alpha})")
+    logger.info(f"Converting to implicit feedback (alpha={alpha}, threshold={min_rating})")
     
     original_len = len(df)
     
-    # 1. min_rating이 0보다 큰 경우에만 필터링 (보통은 0으로 설정하여 모두 사용)
-    if min_rating > 0:
-        df = df[df['rating'] >= min_rating].copy()
-        logger.info(f"Filtered ratings < {min_rating}. Kept: {len(df):,}/{original_len:,}")
-
-    # 2. Confidence 계산: 1 + alpha * rating
-    # 평점이 1.0이어도 confidence는 1 + 20*1 = 21이 됨. (봤다는 사실 자체가 중요)
+    # min_rating 이상만 유지
+    df = df[df['rating'] >= min_rating].copy()
+    logger.info(f"Kept ratings >= {min_rating}: {len(df):,}/{original_len:,} ({len(df)/original_len*100:.1f}%)")
+    
+    # Confidence 계산
     df['confidence'] = 1.0 + alpha * df['rating']
     
-    logger.info(f"Confidence stats - Min: {df['confidence'].min():.2f}, Max: {df['confidence'].max():.2f}")
+    logger.info(f"Confidence range: [{df['confidence'].min():.2f}, {df['confidence'].max():.2f}]")
     
     return df
 
@@ -112,20 +116,28 @@ def create_sparse_matrix(
     """
     User-Item sparse matrix 생성
     
-    Implicit ALS용: 값은 confidence, 존재하는 항목은 모두 positive
+    Args:
+        df: DataFrame with userId, movieId, and value columns
+        user_to_idx: User ID to index mapping
+        movie_to_idx: Movie ID (TMDB ID) to index mapping
+        value_column: 값으로 사용할 컬럼
+        
+    Returns:
+        Sparse matrix of shape (n_users, n_movies)
     """
     logger.info(f"Creating sparse matrix with {value_column} values")
     
+    # 내부 인덱스로 변환
     user_indices = df['userId'].map(user_to_idx)
     movie_indices = df['movieId'].map(movie_to_idx)
     values = df[value_column].values
     
-    # NaN 체크 (Test 셋에만 있는 유저/영화 제거)
+    # NaN 체크 (매핑 실패 케이스)
     valid_mask = ~(user_indices.isna() | movie_indices.isna())
     
     if not valid_mask.all():
         n_invalid = (~valid_mask).sum()
-        logger.warning(f"Dropping {n_invalid} interactions (Unknown User/Movie IDs)")
+        logger.warning(f"Dropping {n_invalid:,} interactions (unmapped IDs)")
         user_indices = user_indices[valid_mask]
         movie_indices = movie_indices[valid_mask]
         values = values[valid_mask]
@@ -136,14 +148,19 @@ def create_sparse_matrix(
     n_users = len(user_to_idx)
     n_movies = len(movie_to_idx)
     
+    # CSR matrix 생성
     matrix = csr_matrix(
         (values, (user_indices, movie_indices)),
         shape=(n_users, n_movies),
         dtype=np.float32
     )
     
-    logger.info(f"Matrix shape: {matrix.shape}, NNZ: {matrix.nnz:,}")
+    logger.info(f"Matrix shape: {matrix.shape}, nnz: {matrix.nnz:,}")
+    sparsity = 100 * (1 - matrix.nnz / (n_users * n_movies))
+    logger.info(f"Sparsity: {sparsity:.4f}%")
+    
     return matrix
+
 
 def save_mappings(
     user_to_idx: Dict[int, int],
@@ -172,7 +189,7 @@ def save_mappings(
     with open(movie_mapping_path, 'wb') as f:
         pickle.dump(movie_mappings, f)
     
-    logger.info(f"Saved mappings to {user_mapping_path} and {movie_mapping_path}")
+    logger.info(f"Saved mappings")
 
 
 def load_mappings(
@@ -194,57 +211,6 @@ def load_mappings(
     )
 
 
-def create_sparse_matrix(
-    df: pd.DataFrame,
-    user_to_idx: Dict[int, int],
-    movie_to_idx: Dict[int, int],
-    value_column: str = 'confidence'
-) -> csr_matrix:
-    """
-    User-Item sparse matrix 생성
-    
-    Args:
-        df: DataFrame with userId, movieId, and value columns
-        user_to_idx: User ID to index mapping
-        movie_to_idx: Movie ID to index mapping
-        value_column: 값으로 사용할 컬럼 (confidence 또는 rating)
-        
-    Returns:
-        Sparse matrix of shape (n_users, n_movies)
-    """
-    logger.info(f"Creating sparse matrix with {value_column} values")
-    
-    # 내부 인덱스로 변환
-    user_indices = df['userId'].map(user_to_idx).values
-    movie_indices = df['movieId'].map(movie_to_idx).values
-    values = df[value_column].values
-    
-    # NaN 체크 (매핑 실패 케이스)
-    valid_mask = ~(pd.isna(user_indices) | pd.isna(movie_indices))
-    if not valid_mask.all():
-        n_invalid = (~valid_mask).sum()
-        logger.warning(f"Found {n_invalid} ratings with unmapped IDs. Removing them.")
-        user_indices = user_indices[valid_mask]
-        movie_indices = movie_indices[valid_mask]
-        values = values[valid_mask]
-    
-    n_users = len(user_to_idx)
-    n_movies = len(movie_to_idx)
-    
-    # CSR matrix 생성
-    matrix = csr_matrix(
-        (values, (user_indices, movie_indices)),
-        shape=(n_users, n_movies),
-        dtype=np.float32
-    )
-    
-    logger.info(f"Created sparse matrix: shape={matrix.shape}, nnz={matrix.nnz:,}")
-    sparsity = 100 * (1 - matrix.nnz / (n_users * n_movies))
-    logger.info(f"Sparsity: {sparsity:.4f}%")
-    
-    return matrix
-
-
 def save_sparse_matrix(matrix: csr_matrix, path: Path):
     """Sparse matrix를 npz 파일로 저장"""
     logger.info(f"Saving sparse matrix to {path}")
@@ -258,21 +224,11 @@ def preprocess_pipeline(
     movie_mapping_path: Path,
     train_matrix_path: Path,
     test_matrix_path: Path,
-    alpha: float = 40.0,
-    min_rating: float = 1.0
+    alpha: float = 20.0,
+    min_rating: float = 3.0
 ):
     """
     전체 전처리 파이프라인 실행
-    
-    Args:
-        train_csv_path: Train CSV 경로
-        test_csv_path: Test CSV 경로
-        user_mapping_path: User 매핑 저장 경로
-        movie_mapping_path: Movie 매핑 저장 경로
-        train_matrix_path: Train matrix 저장 경로
-        test_matrix_path: Test matrix 저장 경로
-        alpha: Confidence scaling parameter
-        min_rating: 최소 rating threshold
     """
     logger.info("=" * 80)
     logger.info("Starting ALS preprocessing pipeline")
